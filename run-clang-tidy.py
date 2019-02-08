@@ -186,6 +186,7 @@ def merge_replacement_files(tmpdir, source_tree):
     merged_dict = {}
     for replacefile in glob.iglob(os.path.join(tmpdir, '*.yaml')):
         print("Merging: " + desanitize_name(replacefile, source_tree))
+        sys.stdout.flush()
         content = yaml.safe_load(open(replacefile, 'r'))
         if not content:
             continue  # Skip empty files.
@@ -417,9 +418,10 @@ def main():
             t.start()
 
         # Fill the queue with files.
-        for name in files:
-            if file_name_re.search(name):
-                task_queue.put(name)
+        all_files = [name for name in files if file_name_re.search(name)]
+        sort(all_files)
+        for file in all_files:
+            task_queue.put(name)
 
         # Wait for all threads to be done.
         task_queue.join()
