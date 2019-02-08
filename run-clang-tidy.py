@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # ===- run-clang-tidy.py - Parallel clang-tidy runner ---------*- python -*--===#
 #
@@ -36,10 +36,14 @@ http://clang.llvm.org/docs/HowToSetupToolingForLLVM.html
 from __future__ import print_function
 
 import argparse
+import collections
+import functools
 import glob
+import itertools
 import json
 import multiprocessing
 import os
+import pprint
 import re
 import shutil
 import subprocess
@@ -47,7 +51,6 @@ import sys
 import tempfile
 import threading
 import traceback
-import pprint
 import yaml
 
 is_py2 = sys.version[0] == '2'
@@ -56,17 +59,6 @@ if is_py2:
         import Queue as queue
 else:
         import queue as queue
-
-
-class hashabledict(dict):
-    def __key(self):
-        return tuple((k, self[k]) for k in sorted(self))
-
-    def __hash__(self):
-        return hash(self.__key())
-
-    def __eq__(self, other):
-        return self.__key() == other.__key()
 
 
 def find_compilation_database(path):
@@ -86,6 +78,14 @@ def make_absolute(f, directory):
     return os.path.normpath(os.path.join(directory, f))
 
 
+def sanitize_name(tmpdir, f):
+    return os.path.join(tmpdir, f.replace("/", "$|$").replace("\\", "$|$").replace(".", "$||$") + ".yaml")
+
+
+def desanitize_name(f, source_tree):
+    return relpath(os.path.splitext(os.path.basename(f))[0].replace("$||$", ".").replace("$|$", "/"), source_tree)
+
+
 def get_tidy_invocation(f, clang_tidy_binary, checks, tmpdir, build_path,
                         header_filter, extra_arg, extra_arg_before, quiet,
                         config):
@@ -102,8 +102,7 @@ def get_tidy_invocation(f, clang_tidy_binary, checks, tmpdir, build_path,
         start.append('-export-fixes')
         # Get a temporary file. We immediately close the handle so clang-tidy can
         # overwrite it.
-        (handle, name) = tempfile.mkstemp(suffix='.yaml', dir=tmpdir)
-        os.close(handle)
+        name = sanitize_name(tmpdir, f)
         start.append(name)
     for arg in extra_arg:
             start.append('-extra-arg=%s' % arg)
@@ -116,6 +115,48 @@ def get_tidy_invocation(f, clang_tidy_binary, checks, tmpdir, build_path,
             start.append('-config=' + config)
     start.append(f)
     return start
+
+
+def relpath(path, base):
+    if base == '/':
+        return os.path.abspath(path)
+    else:
+        return os.path.relpath(path, base)
+
+
+@functools.lru_cache(maxsize=128)
+def get_file(filename):
+    try:
+        with open(filename, 'r', newline='') as f:
+            return f.readlines()
+    except IsADirectoryError as e:
+        return ['']
+
+
+def get_file_line(filename, line):
+    try:
+        return get_file(filename)[line - 1]
+    except IndexError as e:
+        print(f"Error getting line {line} from {filename}. {len(get_file(filename))} lines long.")
+        raise
+
+
+def get_pointer_line(linetext, column):
+    return "".join(c if c == '\t' else ' ' for i, c in enumerate(linetext) if i + 1 < column) + '^'
+
+
+@functools.lru_cache(maxsize=None)
+def get_file_offsets(filename):
+    lengths = [len(l) for l in get_file(filename)]
+    offsets = [0] + list(itertools.accumulate(lengths))
+    return offsets
+
+
+def get_line(offsets, offset):
+    for i, o in enumerate(offsets):
+        if o > offset:
+            return (i, offset - offsets[i - 1] + 1)
+    return len(offsets) - 1, 1
 
 
 def canonicalize_paths(diagnostics):
@@ -137,13 +178,14 @@ def deduplicate(diagnostics):
     return {(d['DiagnosticName'], d['FileOffset'], d['FilePath'], d['Message']): d for d in diagnostics}
 
 
-def merge_replacement_files(tmpdir, mergefile):
+mergekey = "Diagnostics"
+def merge_replacement_files(tmpdir, source_tree):
     """Merge all replacement files in a directory into a single file"""
     # The fixes suggested by clang-tidy >= 4.0.0 are given under
     # the top level key 'Diagnostics' in the output yaml files
-    mergekey = "Diagnostics"
     merged_dict = {}
     for replacefile in glob.iglob(os.path.join(tmpdir, '*.yaml')):
+        print("Merging: " + desanitize_name(replacefile, source_tree))
         content = yaml.safe_load(open(replacefile, 'r'))
         if not content:
             continue  # Skip empty files.
@@ -154,19 +196,67 @@ def merge_replacement_files(tmpdir, mergefile):
     def key(d):
         return ('.h' not in os.path.basename(d['FilePath']), d['FilePath'], d['FileOffset'], d['DiagnosticName'])
 
-    merged = sorted(merged_dict.values(), key=key)
+    return sorted(merged_dict.values(), key=key)
 
-    if merged:
+
+def get_colors(enabled):
+    if enabled:
+        return {'purple': '\033[1;35m', 'white': '\033[1;37m', 'green': '\033[32;1m', 'grey': '\033[30;1m', 'reset': '\033[0m'}
+    else:
+        return collections.defaultdict(lambda: '')
+
+
+def print_notes(note_list, source_tree, colors):
+    for note in note_list:
+        path = note['FilePath']
+        shortpath = relpath(path, source_tree)
+        offsets = get_file_offsets(path)
+        offset = note['FileOffset']
+        line, col = get_line(offsets, offset)
+        message = note['Message']
+        linefromfile = get_file_line(path, line).rstrip('\n')
+        pointerline = get_pointer_line(linefromfile, col)
+        print(f"{colors['white']}{shortpath}:{line}:{col}: {colors['grey']}note: {colors['white']}{message}")
+        print(colors['reset'] + linefromfile)
+        print(colors['green'] + pointerline + colors['reset'])
+
+
+def print_warnings(diagnostics, source_tree, colored):
+    colors = get_colors(colored)
+    note_count = 0
+    for diag in diagnostics:
+        path = diag['FilePath']
+        shortpath = relpath(path, source_tree)
+        offsets = get_file_offsets(path)
+        offset = diag['FileOffset']
+        line, col = get_line(offsets, offset)
+        message = diag['Message']
+        diagname = f"[{diag['DiagnosticName']}]"
+        linefromfile = get_file_line(path, line).rstrip('\n')
+        pointerline = get_pointer_line(linefromfile, col)
+        print(f"{colors['white']}{shortpath}:{line}:{col}: {colors['purple']}warning: {colors['white']}{message} {diagname}")
+        print(colors['reset'] + linefromfile)
+        print(colors['green'] + pointerline + colors['reset'])
+
+        if 'Notes' in diag:
+            print_notes(diag['Notes'], source_tree, colors)
+
+    count = len(diagnostics)
+    print(f"{count} warnings. {note_count} notes.")
+
+
+def write_replacements(replacements, file):
+    if replacements:
         # MainSourceFile: The key is required by the definition inside
         # include/clang/Tooling/ReplacementsYaml.h, but the value
         # is actually never used inside clang-apply-replacements,
         # so we set it to '' here.
-        output = {'MainSourceFile': '', mergekey: merged}
-        with open(mergefile, 'w') as out:
+        output = {'MainSourceFile': '', mergekey: replacements}
+        with open(file, 'w') as out:
             yaml.safe_dump(output, out)
     else:
         # Empty the file:
-        open(mergefile, 'w').close()
+        open(file, 'w').close()
 
 
 def check_clang_apply_replacements_binary(args):
@@ -195,11 +285,14 @@ def run_tidy(args, tmpdir, build_path, queue, lock, failed_files):
     """Takes filenames out of queue and runs clang-tidy on them."""
     while True:
         name = queue.get()
+        shortname = relpath(name, args.source_tree)
         invocation = get_tidy_invocation(name, args.clang_tidy_binary, args.checks,
                                          tmpdir, build_path, args.header_filter,
                                          args.extra_arg, args.extra_arg_before,
                                          args.quiet, args.config)
 
+        with lock:
+            sys.stdout.write(args.clang_tidy_binary + ' ' + shortname + '\n')
         proc = subprocess.Popen(invocation, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output, err = proc.communicate()
         if proc.returncode != 0:
@@ -211,20 +304,32 @@ def run_tidy(args, tmpdir, build_path, queue, lock, failed_files):
         queue.task_done()
 
 
+def str2bool(v):
+    v = v.lower()
+    if v in ("yes", "true", "on", "t", "1"):
+        return True
+    elif v in ("no", "false", "off", "f", "0"):
+        return False
+    else:
+        raise argparse.ArgumentTypeError(f"{v} is not a boolean")
+
+
 def main():
     parser = argparse.ArgumentParser(description='Runs clang-tidy over all files '
                                      'in a compilation database. Requires '
                                      'clang-tidy and clang-apply-replacements in '
                                      '$PATH.')
     parser.add_argument('-clang-tidy-binary', metavar='PATH',
-                        default='clang-tidy-8',
+                        default='clang-tidy',
                         help='path to clang-tidy binary')
     parser.add_argument('-clang-apply-replacements-binary', metavar='PATH',
-                        default='clang-apply-replacements-8',
+                        default='clang-apply-replacements',
                         help='path to clang-apply-replacements binary')
     parser.add_argument('-checks', default=None,
                         help='checks filter, when not specified, use clang-tidy '
                         'default')
+    parser.add_argument('-color', metavar='BOOLEAN', type=str2bool, 
+                        default=sys.stdout.isatty(), help='Output warnings in color')
     parser.add_argument('-config', default=None,
                         help='Specifies a configuration in YAML/JSON format: '
                         '  -config="{Checks: \'*\', '
@@ -238,6 +343,7 @@ def main():
                         'headers to output diagnostics from. Diagnostics from '
                         'the main file of each translation unit are always '
                         'displayed.')
+    parser.add_argument('-error', action='store_true', help='return 1 if there are warnings')
     parser.add_argument('-export-fixes', metavar='filename', dest='export_fixes',
                         help='Create a yaml file to store suggested fixes in, '
                         'which can be applied with clang-apply-replacements.')
@@ -252,6 +358,7 @@ def main():
                         'code after applying fixes')
     parser.add_argument('-p', dest='build_path',
                         help='Path used to read a compile command database.')
+    parser.add_argument('-s', '-source-tree', dest='source_tree', type=os.path.abspath, default='/', help='Common path to remove from warning output')
     parser.add_argument('-extra-arg', dest='extra_arg',
                         action='append', default=[],
                         help='Additional argument to append to the compiler '
@@ -273,11 +380,7 @@ def main():
         build_path = find_compilation_database(db_path)
 
     try:
-        invocation = [args.clang_tidy_binary, '-list-checks']
-        invocation.append('-p=' + build_path)
-        if args.checks:
-            invocation.append('-checks=' + args.checks)
-        invocation.append('-')
+        invocation = [args.clang_tidy_binary, '--version']
         subprocess.check_call(invocation)
     except subprocess.CalledProcessError:
         print("Unable to run clang-tidy.", file=sys.stderr)
@@ -292,10 +395,9 @@ def main():
     if max_task == 0:
         max_task = multiprocessing.cpu_count()
 
-    tmpdir = None
-    if args.fix or args.export_fixes:
+    if args.fix:
         check_clang_apply_replacements_binary(args)
-        tmpdir = tempfile.mkdtemp()
+    tmpdir = tempfile.mkdtemp()
 
     # Build up a big regexy filter from all command line arguments.
     file_name_re = re.compile('|'.join(args.files))
@@ -331,10 +433,14 @@ def main():
             shutil.rmtree(tmpdir)
         os.kill(0, 9)
 
+    diagnostics = merge_replacement_files(tmpdir, args.source_tree)
+
+    print_warnings(diagnostics, args.source_tree, args.color)
+
     if args.export_fixes:
         print('Writing fixes to ' + args.export_fixes + ' ...')
         try:
-            merge_replacement_files(tmpdir, args.export_fixes)
+            write_replacements(diagnostics, args.export_fixes)
         except Exception as e:
             print('Error exporting fixes.\n', file=sys.stderr)
             traceback.print_exc()
