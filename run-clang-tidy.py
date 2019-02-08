@@ -184,7 +184,7 @@ def merge_replacement_files(tmpdir, source_tree):
     # The fixes suggested by clang-tidy >= 4.0.0 are given under
     # the top level key 'Diagnostics' in the output yaml files
     merged_dict = {}
-    for replacefile in glob.iglob(os.path.join(tmpdir, '*.yaml')):
+    for replacefile in sorted(glob.iglob(os.path.join(tmpdir, '*.yaml'))):
         print("Merging: " + desanitize_name(replacefile, source_tree))
         sys.stdout.flush()
         content = yaml.safe_load(open(replacefile, 'r'))
