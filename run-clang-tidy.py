@@ -418,9 +418,9 @@ def main():
             t.start()
 
         # Fill the queue with files.
-        all_files = [name for name in files if file_name_re.search(name)]
+        all_files = [file for file in files if file_name_re.search(file)]
         for file in sorted(all_files):
-            task_queue.put(name)
+            task_queue.put(file)
 
         # Wait for all threads to be done.
         task_queue.join()
