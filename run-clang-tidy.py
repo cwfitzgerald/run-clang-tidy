@@ -292,7 +292,8 @@ def run_tidy(args, tmpdir, build_path, queue, lock, failed_files):
                                          args.quiet, args.config)
 
         with lock:
-            print(args.clang_tidy_binary + ' ' + shortname + '\n')
+            sys.stdout.write(args.clang_tidy_binary + ' ' + shortname + '\n')
+            sys.stdout.flush()
         proc = subprocess.Popen(invocation, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output, err = proc.communicate()
         if proc.returncode != 0:
