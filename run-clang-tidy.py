@@ -419,8 +419,7 @@ def main():
 
         # Fill the queue with files.
         all_files = [name for name in files if file_name_re.search(name)]
-        sort(all_files)
-        for file in all_files:
+        for file in sorted(all_files):
             task_queue.put(name)
 
         # Wait for all threads to be done.
