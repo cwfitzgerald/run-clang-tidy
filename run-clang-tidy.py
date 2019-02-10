@@ -363,7 +363,7 @@ def main():
                         'after applying fixes')
     parser.add_argument('--style', default='file', help='The style of reformat '
                         'code after applying fixes')
-    parser.add_argument('-s', '--sort', default='file', choices=['file', 'diagnostic'], help="The primary sort of the errors.")
+    parser.add_argument('--sort', default='file', choices=['file', 'diagnostic'], help="The primary sort of the errors.")
     parser.add_argument('-p', dest='build_path',
                         help='Path used to read a compile command database.')
     parser.add_argument('-s', '--source-tree', dest='source_tree', type=os.path.abspath, default='/', help='Common path to remove from warning output')
