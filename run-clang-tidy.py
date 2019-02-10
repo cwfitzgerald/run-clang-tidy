@@ -237,7 +237,7 @@ def print_warnings(diagnostics, source_tree, colored):
         offset = diag['FileOffset']
         line, col = get_line(offsets, offset)
         message = diag['Message']
-        has_fixes = 'fix: ' if 'Replacements' in diag else ''
+        has_fixes = 'fix: ' if 'Replacements' in diag and len(diag['Replacements']) != 0 else ''
         diagname = f"[{has_fixes}{diag['DiagnosticName']}]"
         linefromfile = get_file_line(path, line).rstrip('\n')
         pointerline = get_pointer_line(linefromfile, col)
