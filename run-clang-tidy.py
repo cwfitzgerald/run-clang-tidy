@@ -179,7 +179,7 @@ def deduplicate(diagnostics):
 
 
 mergekey = "Diagnostics"
-def merge_replacement_files(tmpdir, source_tree):
+def merge_replacement_files(tmpdir, source_tree, by_diagnostic):
     """Merge all replacement files in a directory into a single file"""
     # The fixes suggested by clang-tidy >= 4.0.0 are given under
     # the top level key 'Diagnostics' in the output yaml files
@@ -194,8 +194,13 @@ def merge_replacement_files(tmpdir, source_tree):
         canonicalize_paths(diagnostics)
         merged_dict.update(deduplicate(diagnostics))
 
-    def key(d):
-        return ('.h' not in os.path.basename(d['FilePath']), d['FilePath'], d['FileOffset'], d['DiagnosticName'])
+    if by_diagnostic:
+        def key(d):
+            return (d['DiagnosticName'], '.h' not in os.path.basename(d['FilePath']), d['FilePath'], d['FileOffset'])
+    else:
+        def key(d):
+            return ('.h' not in os.path.basename(d['FilePath']), d['FilePath'], d['FileOffset'], d['DiagnosticName'])
+
 
     return sorted(merged_dict.values(), key=key)
 
@@ -358,6 +363,7 @@ def main():
                         'after applying fixes')
     parser.add_argument('--style', default='file', help='The style of reformat '
                         'code after applying fixes')
+    parser.add_argument('-s', '--sort', default='file', choices=['file', 'diagnostic'], help="The primary sort of the errors.")
     parser.add_argument('-p', dest='build_path',
                         help='Path used to read a compile command database.')
     parser.add_argument('-s', '--source-tree', dest='source_tree', type=os.path.abspath, default='/', help='Common path to remove from warning output')
@@ -435,7 +441,7 @@ def main():
             shutil.rmtree(tmpdir)
         os.kill(0, 9)
 
-    diagnostics = merge_replacement_files(tmpdir, args.source_tree)
+    diagnostics = merge_replacement_files(tmpdir, args.source_tree, args.sort == 'diagnostic')
 
     print_warnings(diagnostics, args.source_tree, args.color)
 
