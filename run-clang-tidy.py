@@ -457,14 +457,16 @@ def main():
     if args.fix:
         print('Applying fixes ...')
         try:
+            for file in glob.glob(os.path.join(tmpdir, '*')):
+                os.remove(file)
+            write_replacements(diagnostics, os.path.join(tmpdir, "fixes.yaml"))
             apply_fixes(args, tmpdir)
         except Exception as e:
             print('Error applying fixes.\n', file=sys.stderr)
             traceback.print_exc()
             return_code = 1
 
-    if tmpdir:
-        shutil.rmtree(tmpdir)
+    shutil.rmtree(tmpdir)
     sys.exit(return_code)
 
 
