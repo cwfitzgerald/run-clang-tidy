@@ -226,6 +226,8 @@ def print_notes(note_list, source_tree, colors):
         print(colors['reset'] + linefromfile)
         print(colors['green'] + pointerline + colors['reset'])
 
+    return len(note_list)
+
 
 def print_warnings(diagnostics, source_tree, colored):
     colors = get_colors(colored)
@@ -246,7 +248,7 @@ def print_warnings(diagnostics, source_tree, colored):
         print(colors['green'] + pointerline + colors['reset'])
 
         if 'Notes' in diag:
-            print_notes(diag['Notes'], source_tree, colors)
+            note_count += print_notes(diag['Notes'], source_tree, colors)
 
     count = len(diagnostics)
     print(f"{count} warnings. {note_count} notes.")
